@@ -1,6 +1,7 @@
 # 비밀/자격증명 — 절대 커밋 금지
 .env
 .env.*
+!.env.example
 *.key
 *credentials*
 *secret*
@@ -21,6 +22,11 @@ __pycache__/
 .venv/
 venv/
 .python-version
+
+# 프로토타입 생성/출력 오디오 (커밋 금지)
+prototype/samples/
+prototype/out*.wav
+*.aiff
 
 # OS / 에디터
 .DS_Store
