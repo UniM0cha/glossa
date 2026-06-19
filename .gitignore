@@ -1,0 +1,29 @@
+# 비밀/자격증명 — 절대 커밋 금지
+.env
+.env.*
+*.key
+*credentials*
+*secret*
+
+# 빌드 산출물 (C++ / OBS 플러그인)
+build/
+cmake-build-*/
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.plugin/
+
+# Python 프로토타입
+__pycache__/
+*.pyc
+.venv/
+venv/
+.python-version
+
+# OS / 에디터
+.DS_Store
+.idea/
+.vscode/
+*.swp
