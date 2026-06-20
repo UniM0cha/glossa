@@ -4,8 +4,8 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake" NO_POLICY_SCO
 
 project(${_name} VERSION ${_version})
 
-option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
-option(ENABLE_QT "Use Qt functionality" OFF)
+option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
+option(ENABLE_QT "Use Qt functionality" ON)
 
 include(compilerconfig)
 include(defaults)
@@ -48,6 +48,14 @@ if(TARGET ixwebsocket)
   )
 endif()
 
+# macOS SDK 26+ 에서 AGL 프레임워크 제거됨. Qt6 FindWrapOpenGL 이 라이브 FS 의
+# /System/Library/Frameworks/AGL.framework 를 find_library 로 찾아 -framework AGL 을 링크하지만,
+# SDK(MacOSX26.5) 에는 AGL 이 없어 "ld: framework 'AGL' not found" 로 실패한다.
+# find_library 결과를 빈 값으로 고정해 AGL 링크를 차단(find_package(Qt6)/WrapOpenGL 전에 실행).
+if(APPLE)
+  set(WrapOpenGL_AGL "" CACHE FILEPATH "AGL disabled (removed in macOS SDK 26+)" FORCE)
+endif()
+
 if(ENABLE_FRONTEND_API)
   find_package(obs-frontend-api REQUIRED)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
@@ -66,6 +74,6 @@ if(ENABLE_QT)
   )
 endif()
 
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.cpp)
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.cpp src/interpreter-dock.cpp src/interpreter-dock.hpp)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

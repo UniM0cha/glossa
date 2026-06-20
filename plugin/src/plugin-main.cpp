@@ -16,6 +16,9 @@ filter_audio 는 입력 PCM 을 변형 없이 그대로 반환(방송 원본 불
 #include <ixwebsocket/IXWebSocket.h>
 #include <ixwebsocket/IXNetSystem.h>
 
+#include <obs-frontend-api.h>
+#include "interpreter-dock.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -286,6 +289,14 @@ bool obs_module_load(void)
 	obs_register_source(&interpreter_filter_info);
 	obs_log(LOG_INFO, "OBS Live Interpreter 로드됨 (버전 %s)", PLUGIN_VERSION);
 	return true;
+}
+
+void obs_module_post_load(void)
+{
+	/* 프론트엔드 준비 후 도크 등록 (보기→도크 메뉴에 노출) */
+	auto *dock = new InterpreterDock();
+	obs_frontend_add_dock_by_id("obs_live_interpreter_dock", obs_module_text("DockTitle"), dock);
+	obs_log(LOG_INFO, "[interpreter] 도크 등록됨");
 }
 
 void obs_module_unload(void)
