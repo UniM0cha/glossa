@@ -11,10 +11,12 @@ filter_audio 는 입력 PCM 을 변형 없이 그대로 반환(방송 원본 불
 #include <obs-module.h>
 #include <plugin-support.h>
 #include <media-io/audio-resampler.h>
+#include "interpreter-control.hpp"
 
 #include <ixwebsocket/IXWebSocket.h>
 #include <ixwebsocket/IXNetSystem.h>
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -50,7 +52,60 @@ struct interpreter_filter {
 	/* WebSocket */
 	ix::WebSocket ws;
 	std::atomic<bool> ws_ready{false};
+
+	/* 외부 토글 핫키 */
+	obs_hotkey_id toggle_hotkey = OBS_INVALID_HOTKEY_ID;
 };
+
+/* ── 외부 컨트롤(도크/핫키)용 전역 레지스트리 ── */
+static std::mutex g_filters_mtx;
+static std::vector<interpreter_filter *> g_filters;
+
+/* 필터의 enabled 설정을 바꾸고 표준 경로(update)로 적용 → 체크박스/연결/영속 동기화 */
+static void set_filter_enabled(interpreter_filter *f, bool on)
+{
+	obs_data_t *s = obs_source_get_settings(f->context);
+	obs_data_set_bool(s, "enabled", on);
+	obs_source_update(f->context, s);
+	obs_data_release(s);
+}
+
+int interpreter_state(void)
+{
+	std::lock_guard<std::mutex> lk(g_filters_mtx);
+	if (g_filters.empty())
+		return INTERP_NONE;
+	bool any_enabled = false, any_live = false;
+	for (auto *f : g_filters) {
+		if (f->enabled.load()) {
+			any_enabled = true;
+			if (f->ws_ready.load())
+				any_live = true;
+		}
+	}
+	return any_live ? INTERP_LIVE : (any_enabled ? INTERP_CONNECTING : INTERP_OFF);
+}
+
+void interpreter_toggle_all(void)
+{
+	std::lock_guard<std::mutex> lk(g_filters_mtx);
+	bool any_enabled = false;
+	for (auto *f : g_filters)
+		any_enabled = any_enabled || f->enabled.load();
+	bool target = !any_enabled; /* 하나라도 ON이면 전부 OFF, 아니면 전부 ON */
+	for (auto *f : g_filters)
+		set_filter_enabled(f, target);
+}
+
+static void interpreter_toggle_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	auto *f = static_cast<interpreter_filter *>(data);
+	set_filter_enabled(f, !f->enabled.load());
+}
 
 static void worker_fn(interpreter_filter *f)
 {
@@ -123,6 +178,14 @@ static void *interpreter_filter_create(obs_data_t *settings, obs_source_t *sourc
 	});
 
 	interpreter_filter_update(f, settings);
+
+	f->toggle_hotkey = obs_hotkey_register_source(source, "obs_live_interpreter.toggle",
+						      obs_module_text("ToggleHotkey"), interpreter_toggle_hotkey, f);
+	{
+		std::lock_guard<std::mutex> lk(g_filters_mtx);
+		g_filters.push_back(f);
+	}
+
 	obs_log(LOG_INFO, "[interpreter] 필터 생성됨");
 	return f;
 }
@@ -130,6 +193,11 @@ static void *interpreter_filter_create(obs_data_t *settings, obs_source_t *sourc
 static void interpreter_filter_destroy(void *data)
 {
 	auto *f = static_cast<interpreter_filter *>(data);
+	{
+		std::lock_guard<std::mutex> lk(g_filters_mtx);
+		g_filters.erase(std::remove(g_filters.begin(), g_filters.end(), f), g_filters.end());
+	}
+	obs_hotkey_unregister(f->toggle_hotkey);
 	f->enabled = false;
 	f->ws.stop();
 	f->running = false;
