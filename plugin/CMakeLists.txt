@@ -48,6 +48,14 @@ if(TARGET ixwebsocket)
   )
 endif()
 
+# Windows: IXWebSocket 은 번들 mbedTLS 를 TLS 백엔드로 빌드한다. mbedcrypto 가 CNG 의
+# BCryptGenRandom(bcrypt.dll)을 엔트로피로 참조하므로 bcrypt 를 명시 링크해야
+# LNK2001(unresolved external symbol BCryptGenRandom)/LNK1120 을 막는다.
+# (macOS 는 SecureTransport 라 불필요.)
+if(WIN32)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE bcrypt)
+endif()
+
 # macOS SDK 26+ 에서 AGL 프레임워크 제거됨. Qt6 FindWrapOpenGL 이 라이브 FS 의
 # /System/Library/Frameworks/AGL.framework 를 find_library 로 찾아 -framework AGL 을 링크하지만,
 # SDK(MacOSX26.5) 에는 AGL 이 없어 "ld: framework 'AGL' not found" 로 실패한다.
