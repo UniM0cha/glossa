@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>실시간 통역 / Live Interpretation</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, system-ui, sans-serif;
+         background: #0f1115; color: #e8eaed; height: 100vh;
+         display: flex; flex-direction: column; align-items: center; }
+  header { padding: 24px 16px 8px; text-align: center; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0; }
+  .status { margin-top: 6px; font-size: 13px; color: #9aa0a6; }
+  .status.live { color: #34d399; }
+  main { flex: 1; width: 100%; max-width: 420px; padding: 16px;
+         display: flex; flex-direction: column; gap: 12px; }
+  .label { font-size: 13px; color: #9aa0a6; margin-top: 8px; }
+  .langs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  button.lang { padding: 16px; font-size: 16px; border-radius: 12px; border: 1px solid #2a2e37;
+         background: #1a1d24; color: #e8eaed; cursor: pointer; }
+  button.lang.sel { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 600; }
+  .big { margin-top: auto; padding: 18px; font-size: 17px; font-weight: 600; border: none;
+         border-radius: 14px; background: #34d399; color: #06281e; cursor: pointer; }
+  .big.stop { background: #ef4444; color: #fff; }
+  .big:disabled { opacity: .4; }
+  .hint { font-size: 12px; color: #6b7280; text-align: center; line-height: 1.5; }
+</style>
+</head>
+<body>
+<header>
+  <h1>실시간 통역</h1>
+  <div id="status" class="status">연결 중…</div>
+</header>
+<main>
+  <div class="label">언어 선택 / Select language</div>
+  <div class="langs" id="langs"></div>
+  <button id="toggle" class="big" disabled>듣기 시작</button>
+  <div class="hint">언어를 고르고 <b>듣기 시작</b>을 누른 뒤 대기하세요.<br>
+       예배가 시작되면 자동으로 통역 음성이 나옵니다.</div>
+</main>
+<script>
+const LANGS = [
+  { code: "en", name: "English" },
+  { code: "vi", name: "Tiếng Việt" },
+  { code: "zh", name: "中文" },
+  { code: "ja", name: "日本語" },
+];
+const OUT_RATE = 24000;
+
+let selected = localStorage.getItem("lang") || "en";
+let ws = null, audioCtx = null, playHead = 0, listening = false, live = false;
+
+const statusEl = document.getElementById("status");
+const toggleEl = document.getElementById("toggle");
+const langsEl = document.getElementById("langs");
+
+function renderLangs() {
+  langsEl.innerHTML = "";
+  for (const l of LANGS) {
+    const b = document.createElement("button");
+    b.className = "lang" + (l.code === selected ? " sel" : "");
+    b.textContent = l.name;
+    b.onclick = () => {
+      selected = l.code; localStorage.setItem("lang", l.code);
+      renderLangs();
+      if (listening) { stop(); start(); }  // 언어 바꾸면 재접속
+    };
+    langsEl.appendChild(b);
+  }
+}
+
+function setStatus(text, isLive) {
+  statusEl.textContent = text;
+  statusEl.classList.toggle("live", !!isLive);
+}
+
+function start() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  audioCtx.resume();
+  playHead = audioCtx.currentTime + 0.15;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/listen?lang=${selected}`);
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === "string") {
+      const m = JSON.parse(ev.data);
+      if (m.type === "status") { live = m.live; updateStatus(); }
+      return;
+    }
+    playChunk(new Int16Array(ev.data));
+  };
+  ws.onclose = () => { if (listening) setStatus("재연결 중…", false); };
+  ws.onopen = () => updateStatus();
+  listening = true;
+  toggleEl.textContent = "듣기 중지";
+  toggleEl.classList.add("stop");
+  toggleEl.disabled = false;
+}
+
+function stop() {
+  listening = false;
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  toggleEl.textContent = "듣기 시작";
+  toggleEl.classList.remove("stop");
+  updateStatus();
+}
+
+function updateStatus() {
+  if (!listening) { setStatus("대기 — 언어를 고르고 듣기 시작", false); return; }
+  setStatus(live ? "● 통역 진행 중 (LIVE)" : "대기 중 — 진행 중인 예배 없음", live);
+}
+
+function playChunk(int16) {
+  if (!audioCtx) return;
+  const f32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) f32[i] = int16[i] / 32768;
+  const buf = audioCtx.createBuffer(1, f32.length, OUT_RATE);
+  buf.getChannelData(0).set(f32);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(audioCtx.destination);
+  const now = audioCtx.currentTime;
+  if (playHead < now) playHead = now + 0.05;  // 언더런이면 약간 미래로
+  src.start(playHead);
+  playHead += buf.duration;
+}
+
+toggleEl.onclick = () => { listening ? stop() : start(); };
+renderLangs();
+updateStatus();
+toggleEl.disabled = false;
+</script>
+</body>
+</html>

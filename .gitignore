@@ -26,6 +26,7 @@ venv/
 # 프로토타입 생성/출력 오디오 (커밋 금지)
 prototype/samples/
 prototype/out*.wav
+server/out*.wav
 *.aiff
 
 # OS / 에디터

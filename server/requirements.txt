@@ -1,0 +1,6 @@
+# 클라우드 동반 서버 (Python)
+fastapi>=0.115           # 웹 + WebSocket 라우팅
+uvicorn[standard]>=0.30  # ASGI 서버 (websockets 포함)
+google-genai>=1.0.0      # Gemini Live Translate (Phase 0 검증 SDK)
+python-dotenv>=1.0.0     # .env 로드
+websockets>=12.0         # fake_plugin/test_listener 클라이언트용
