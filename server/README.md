@@ -33,6 +33,20 @@ python fake_plugin.py
 ```
 검증값(2026-06-20): 한국어 샘플 → en/vi 동시 번역 정상, 첫 음성 ~4.6s.
 
+## 클라우드 배포 (Railway 등 상시 운영)
+서버는 항상 켜져 있고, OBS 플러그인이 접속해 "번역 ON" 하면 그때 예배가 LIVE 가 된다.
+`Procfile` 이 `$PORT` 바인딩을 처리하므로 Railway/Render 등에서 바로 뜬다.
+
+1. 이 저장소를 Railway 프로젝트로 연결, **Root Directory = `server`** 로 지정.
+2. 환경변수 설정(대시보드): `GEMINI_API_KEY`, `SERVICE_KEY`. (`.env` 는 배포 안 됨 — gitignore)
+3. 배포되면 공개 URL(`https://<app>.up.railway.app`) 발급.
+   - 폰/QR: `https://<app>.up.railway.app`
+   - OBS 플러그인: 서버 URL `wss://<app>.up.railway.app`, 서비스 키 = `SERVICE_KEY`
+4. Railway 가 `requirements.txt` + `Procfile` 을 자동 인식(nixpacks). Python 3.11+ 에서 동작.
+
+> WebSocket(`/ingress`, `/listen`)은 Railway 프록시가 그대로 지원. TLS 는 Railway 가 종단 →
+> 폰은 `wss`, 플러그인도 `wss` 로 접속(IXWebSocket SecureTransport).
+
 ## 엔드포인트
 | 경로 | 용도 | 인증 |
 |---|---|---|
