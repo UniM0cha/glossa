@@ -16,6 +16,7 @@ import base64
 import json
 import logging
 import os
+import time
 
 from google import genai
 from google.genai import types
@@ -33,10 +34,15 @@ OPENAI_URL = f"wss://api.openai.com/v1/realtime/translations?model={OPENAI_MODEL
 OPENAI_IN_RATE = 24000   # OpenAI 입력: 24kHz mono 16-bit (플러그인이 24k 로 보냄)
 
 OUT_RATE = 24000  # 양 엔진 공통 출력: 24kHz mono 16-bit
+IN_Q_MAX = 100    # 입력 큐 상한(≈10s @100ms). outage 시 무한 증가 방지 — 가득 차면 oldest 드롭.
 
 
 class BaseLanguageSession:
-    """엔진 무관 골격: 입력 큐 + start/stop/feed. 실제 연동은 _run() 에서 엔진별로."""
+    """엔진 무관 골격: 입력 큐 + start/stop/feed + 끊김 시 자동 재접속(_run).
+
+    실제 업스트림 접속/스트리밍은 엔진별 _connect_and_stream() 에서. _run() 이 그걸
+    감싸 끊기면 backoff 재접속하고, 재접속 시 밀린(stale) 오디오를 버려 라이브부터 재개한다.
+    """
 
     ENGINE = "base"
 
@@ -44,13 +50,31 @@ class BaseLanguageSession:
         self.lang = lang
         self.broadcast = broadcast          # async fn(lang, pcm_bytes)
         self.on_transcript = on_transcript  # optional async fn(lang, text)
-        self.in_q: asyncio.Queue = asyncio.Queue()
+        self.in_q: asyncio.Queue = asyncio.Queue(maxsize=IN_Q_MAX)
         self._task = None
         self._running = False
 
     def feed(self, pcm: bytes):
-        if self._running:
+        if not self._running:
+            return
+        try:
             self.in_q.put_nowait(pcm)
+        except asyncio.QueueFull:
+            try:
+                self.in_q.get_nowait()  # 가득 차면 oldest 드롭(라이브 우선)
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self.in_q.put_nowait(pcm)
+            except asyncio.QueueFull:
+                pass
+
+    def _drain_queue(self):
+        while not self.in_q.empty():
+            try:
+                self.in_q.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
     async def start(self):
         if self._running:
@@ -68,11 +92,35 @@ class BaseLanguageSession:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        while not self.in_q.empty():
-            self.in_q.get_nowait()
+        self._drain_queue()
         log.info("[%s] 세션 종료 (engine=%s)", self.lang, self.ENGINE)
 
     async def _run(self):
+        """끊기면 backoff 재접속(라이브 유지). 실제 접속/스트리밍은 _connect_and_stream() 에서."""
+        backoff = 1.0
+        while self._running:
+            self._drain_queue()  # 재접속 시 밀린(stale) 오디오 폐기 → 라이브부터 재개
+            started = time.monotonic()
+            try:
+                await self._connect_and_stream()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                reason = repr(e)
+            else:
+                reason = "정상 종료"
+            if not self._running:
+                break
+            if time.monotonic() - started >= 5:
+                backoff = 1.0  # 충분히 가동 후 끊김 = 일시 장애 → backoff 리셋
+            log.warning("[%s] %s 끊김(%s) → %.0fs 후 재접속", self.lang, self.ENGINE, reason, backoff)
+            try:
+                await asyncio.sleep(backoff)
+            except asyncio.CancelledError:
+                raise
+            backoff = min(backoff * 2, 15.0)
+
+    async def _connect_and_stream(self):
         raise NotImplementedError
 
 
@@ -85,7 +133,7 @@ class GeminiTranslateSession(BaseLanguageSession):
         super().__init__(lang, broadcast, on_transcript)
         self.client = client
 
-    async def _run(self):
+    async def _connect_and_stream(self):
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             output_audio_transcription=types.AudioTranscriptionConfig(),
@@ -94,32 +142,27 @@ class GeminiTranslateSession(BaseLanguageSession):
                 echo_target_language=False,
             ),
         )
-        try:
-            async with self.client.aio.live.connect(model=GEMINI_MODEL, config=config) as session:
-                async def sender():
-                    while True:
-                        pcm = await self.in_q.get()
-                        await session.send_realtime_input(
-                            audio=types.Blob(data=pcm, mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}")
-                        )
+        async with self.client.aio.live.connect(model=GEMINI_MODEL, config=config) as session:
+            async def sender():
+                while True:
+                    pcm = await self.in_q.get()
+                    await session.send_realtime_input(
+                        audio=types.Blob(data=pcm, mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}")
+                    )
 
-                async def receiver():
-                    async for response in session.receive():
-                        sc = response.server_content
-                        if not sc:
-                            continue
-                        if sc.output_transcription and sc.output_transcription.text and self.on_transcript:
-                            await self.on_transcript(self.lang, sc.output_transcription.text)
-                        if sc.model_turn:
-                            for part in sc.model_turn.parts:
-                                if part.inline_data and part.inline_data.data:
-                                    await self.broadcast(self.lang, part.inline_data.data)
+            async def receiver():
+                async for response in session.receive():
+                    sc = response.server_content
+                    if not sc:
+                        continue
+                    if sc.output_transcription and sc.output_transcription.text and self.on_transcript:
+                        await self.on_transcript(self.lang, sc.output_transcription.text)
+                    if sc.model_turn:
+                        for part in sc.model_turn.parts:
+                            if part.inline_data and part.inline_data.data:
+                                await self.broadcast(self.lang, part.inline_data.data)
 
-                await asyncio.gather(sender(), receiver())
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # 세션 오류 시 죽지 않고 로그 (재접속은 상위에서)
-            log.exception("[%s] Gemini 세션 오류: %s", self.lang, e)
+            await asyncio.gather(sender(), receiver())
 
 
 class OpenAITranslateSession(BaseLanguageSession):
@@ -138,51 +181,46 @@ class OpenAITranslateSession(BaseLanguageSession):
         super().__init__(lang, broadcast, on_transcript)
         self.api_key = api_key
 
-    async def _run(self):
+    async def _connect_and_stream(self):
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        try:
-            async with websockets.connect(OPENAI_URL, additional_headers=headers, max_size=None) as ws:
-                # 출력 언어 설정 (입력은 24k pcm16 고정)
-                await ws.send(json.dumps({
-                    "type": "session.update",
-                    "session": {"audio": {"output": {"language": self.lang}}},
-                }))
+        async with websockets.connect(OPENAI_URL, additional_headers=headers, max_size=None) as ws:
+            # 출력 언어 설정 (입력은 24k pcm16 고정)
+            await ws.send(json.dumps({
+                "type": "session.update",
+                "session": {"audio": {"output": {"language": self.lang}}},
+            }))
 
-                async def sender():
-                    while True:
-                        pcm = await self.in_q.get()
-                        await ws.send(json.dumps({
-                            "type": "session.input_audio_buffer.append",
-                            "audio": base64.b64encode(pcm).decode("ascii"),
-                        }))
+            async def sender():
+                while True:
+                    pcm = await self.in_q.get()
+                    await ws.send(json.dumps({
+                        "type": "session.input_audio_buffer.append",
+                        "audio": base64.b64encode(pcm).decode("ascii"),
+                    }))
 
-                async def receiver():
-                    async for raw in ws:
-                        if isinstance(raw, bytes):  # 번역 오디오/전사는 JSON 텍스트로 옴
-                            continue
-                        try:
-                            evt = json.loads(raw)
-                        except (ValueError, TypeError):
-                            continue
-                        t = evt.get("type", "")
-                        if t == "session.output_audio.delta":
-                            d = evt.get("delta") or evt.get("audio")
-                            if d:
-                                await self.broadcast(self.lang, base64.b64decode(d))
-                        elif t == "session.output_transcript.delta":
-                            d = evt.get("delta") or evt.get("text")
-                            if d and self.on_transcript:
-                                await self.on_transcript(self.lang, d)
-                        elif t == "error" or t.endswith(".error"):
-                            log.warning("[%s] OpenAI 이벤트 오류: %s", self.lang, evt)
-                        else:
-                            log.debug("[%s] OpenAI 미처리 이벤트: %s", self.lang, t)
+            async def receiver():
+                async for raw in ws:
+                    if isinstance(raw, bytes):  # 번역 오디오/전사는 JSON 텍스트로 옴
+                        continue
+                    try:
+                        evt = json.loads(raw)
+                    except (ValueError, TypeError):
+                        continue
+                    t = evt.get("type", "")
+                    if t == "session.output_audio.delta":
+                        d = evt.get("delta") or evt.get("audio")
+                        if d:
+                            await self.broadcast(self.lang, base64.b64decode(d))
+                    elif t == "session.output_transcript.delta":
+                        d = evt.get("delta") or evt.get("text")
+                        if d and self.on_transcript:
+                            await self.on_transcript(self.lang, d)
+                    elif t == "error" or t.endswith(".error"):
+                        log.warning("[%s] OpenAI 이벤트 오류: %s", self.lang, evt)
+                    else:
+                        log.debug("[%s] OpenAI 미처리 이벤트: %s", self.lang, t)
 
-                await asyncio.gather(sender(), receiver())
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # 세션 오류 시 죽지 않고 로그 (재접속은 상위에서)
-            log.exception("[%s] OpenAI 세션 오류: %s", self.lang, e)
+            await asyncio.gather(sender(), receiver())
 
 
 class SessionManager:

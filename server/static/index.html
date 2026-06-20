@@ -27,6 +27,12 @@
   .big.stop { background: #ef4444; color: #fff; }
   .big:disabled { opacity: .4; }
   .hint { font-size: 12px; color: #6b7280; text-align: center; line-height: 1.5; }
+  .caption { flex: 1; min-height: 96px; margin-top: 8px; padding: 14px 16px;
+         border-radius: 12px; background: #11141a; border: 1px solid #2a2e37;
+         font-size: 20px; line-height: 1.55; color: #f1f3f4;
+         overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+  .caption:empty::before { content: "자막이 여기에 표시됩니다 / Subtitles appear here";
+         color: #4b5563; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -37,6 +43,8 @@
 <main>
   <div class="label">언어 선택 / Select language</div>
   <div class="langs" id="langs"></div>
+  <div class="label">실시간 자막 / Live subtitles</div>
+  <div id="caption" class="caption"></div>
   <button id="toggle" class="big" disabled>듣기 시작</button>
   <div class="hint">언어를 고르고 <b>듣기 시작</b>을 누른 뒤 대기하세요.<br>
        예배가 시작되면 자동으로 통역 음성이 나옵니다.</div>
@@ -56,6 +64,8 @@ let ws = null, audioCtx = null, playHead = 0, listening = false, live = false;
 const statusEl = document.getElementById("status");
 const toggleEl = document.getElementById("toggle");
 const langsEl = document.getElementById("langs");
+const captionEl = document.getElementById("caption");
+let captionText = "";
 
 function renderLangs() {
   langsEl.innerHTML = "";
@@ -77,7 +87,22 @@ function setStatus(text, isLive) {
   statusEl.classList.toggle("live", !!isLive);
 }
 
+function clearCaption() { captionText = ""; captionEl.textContent = ""; }
+
+function addCaption(delta) {
+  captionText += delta;
+  // 너무 길어지면 앞쪽 완성 문장을 잘라 최근 맥락만 유지
+  while (captionText.length > 320) {
+    const m = captionText.match(/[.?!。]\s+/);
+    if (!m) break;
+    captionText = captionText.slice(m.index + m[0].length);
+  }
+  captionEl.textContent = captionText.trimStart();
+  captionEl.scrollTop = captionEl.scrollHeight;
+}
+
 function start() {
+  clearCaption();
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   audioCtx.resume();
   playHead = audioCtx.currentTime + 0.15;
@@ -88,6 +113,7 @@ function start() {
     if (typeof ev.data === "string") {
       const m = JSON.parse(ev.data);
       if (m.type === "status") { live = m.live; updateStatus(); }
+      else if (m.type === "transcript") { addCaption(m.text); }
       return;
     }
     playChunk(new Int16Array(ev.data));

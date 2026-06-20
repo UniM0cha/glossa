@@ -40,11 +40,22 @@ async def broadcast_audio(lang: str, pcm: bytes):
             pass
 
 
-async def log_transcript(lang: str, text: str):
+async def broadcast_transcript(lang: str, text: str):
+    """번역 transcript(델타)를 그 언어 청취자들에게 자막용 텍스트 메시지로 전송."""
+    payload = json.dumps({"type": "transcript", "text": text})
+    for ws in list(listeners.get(lang, ())):
+        try:
+            await ws.send_text(payload)
+        except Exception:
+            pass
+
+
+async def handle_transcript(lang: str, text: str):
     log.info("[%s] %s", lang, text)
+    await broadcast_transcript(lang, text)
 
 
-mgr = SessionManager(broadcast_audio, on_transcript=log_transcript)
+mgr = SessionManager(broadcast_audio, on_transcript=handle_transcript)
 
 
 def status_payload() -> str:
