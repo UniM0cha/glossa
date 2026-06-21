@@ -27,12 +27,16 @@
   .big.stop { background: #ef4444; color: #fff; }
   .big:disabled { opacity: .4; }
   .hint { font-size: 12px; color: #6b7280; text-align: center; line-height: 1.5; }
-  .caption { flex: 1; min-height: 96px; margin-top: 8px; padding: 14px 16px;
+  .caption { flex: 1; min-height: 110px; margin-top: 8px; padding: 14px 16px;
          border-radius: 12px; background: #11141a; border: 1px solid #2a2e37;
-         font-size: 20px; line-height: 1.55; color: #f1f3f4;
-         overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
-  .caption:empty::before { content: "자막이 여기에 표시됩니다 / Subtitles appear here";
-         color: #4b5563; font-size: 14px; }
+         display: flex; flex-direction: column; justify-content: flex-end; gap: 8px;
+         overflow: hidden; }
+  /* 직전 문장(흐리게, 위) + 현재 문장(또렷, 아래·하단정렬) — 문장 끝에만 한 칸 이동 */
+  .cap-prev { font-size: 15px; line-height: 1.4; color: #9aa0a6; opacity: .55;
+         white-space: pre-wrap; word-break: break-word; }
+  .cap-cur { font-size: 21px; line-height: 1.5; color: #f1f3f4; font-weight: 500;
+         white-space: pre-wrap; word-break: break-word; }
+  .cap-cur.placeholder { font-size: 14px; font-weight: 400; color: #4b5563; }
 </style>
 </head>
 <body>
@@ -44,7 +48,10 @@
   <div class="label">언어 선택 / Select language</div>
   <div class="langs" id="langs"></div>
   <div class="label">실시간 자막 / Live subtitles</div>
-  <div id="caption" class="caption"></div>
+  <div id="caption" class="caption">
+    <div id="cap-prev" class="cap-prev"></div>
+    <div id="cap-cur" class="cap-cur"></div>
+  </div>
   <button id="toggle" class="big" disabled>듣기 시작</button>
   <div class="hint">언어를 고르고 <b>듣기 시작</b>을 누른 뒤 대기하세요.<br>
        예배가 시작되면 자동으로 통역 음성이 나옵니다.</div>
@@ -64,8 +71,10 @@ let ws = null, audioCtx = null, playHead = 0, listening = false, live = false;
 const statusEl = document.getElementById("status");
 const toggleEl = document.getElementById("toggle");
 const langsEl = document.getElementById("langs");
-const captionEl = document.getElementById("caption");
-let captionText = "";
+const capPrevEl = document.getElementById("cap-prev");
+const capCurEl = document.getElementById("cap-cur");
+let prevSentence = "", curSentence = "";
+const SENT_END = /[.?!。！？]$/;
 
 function renderLangs() {
   langsEl.innerHTML = "";
@@ -87,18 +96,38 @@ function setStatus(text, isLive) {
   statusEl.classList.toggle("live", !!isLive);
 }
 
-function clearCaption() { captionText = ""; captionEl.textContent = ""; }
+function renderCaption() {
+  capPrevEl.textContent = prevSentence;
+  if (!prevSentence && !curSentence) {
+    capCurEl.textContent = "자막이 여기에 표시됩니다 / Subtitles appear here";
+    capCurEl.classList.add("placeholder");
+  } else {
+    capCurEl.textContent = curSentence;
+    capCurEl.classList.remove("placeholder");
+  }
+}
+
+function clearCaption() { prevSentence = ""; curSentence = ""; renderCaption(); }
 
 function addCaption(delta) {
-  captionText += delta;
-  // 너무 길어지면 앞쪽 완성 문장을 잘라 최근 맥락만 유지
-  while (captionText.length > 320) {
-    const m = captionText.match(/[.?!。]\s+/);
-    if (!m) break;
-    captionText = captionText.slice(m.index + m[0].length);
+  curSentence += delta;
+  const trimmed = curSentence.replace(/\s+$/, "");
+  if (trimmed.length >= 2 && SENT_END.test(trimmed)) {
+    // 문장 완성 → 직전 문장으로 이월, 현재 비움 (위로 이동은 여기서만)
+    prevSentence = trimmed;
+    curSentence = "";
+  } else if (curSentence.length > 160) {
+    // 문장부호 없이 길어지면 마지막 콤마/공백에서 끊어 이월(과성장 방지)
+    const cut = Math.max(curSentence.lastIndexOf(", "), curSentence.lastIndexOf(" "));
+    if (cut > 40) {
+      prevSentence = curSentence.slice(0, cut + 1).trim();
+      curSentence = curSentence.slice(cut + 1);
+    } else {
+      prevSentence = curSentence.trim();
+      curSentence = "";
+    }
   }
-  captionEl.textContent = captionText.trimStart();
-  captionEl.scrollTop = captionEl.scrollHeight;
+  renderCaption();
 }
 
 function start() {
@@ -157,6 +186,7 @@ function playChunk(int16) {
 toggleEl.onclick = () => { listening ? stop() : start(); };
 renderLangs();
 updateStatus();
+renderCaption();
 toggleEl.disabled = false;
 </script>
 </body>

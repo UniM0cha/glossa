@@ -56,6 +56,22 @@ if(WIN32)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE bcrypt)
 endif()
 
+# --- nlohmann/json: 서버 모니터링 상태(JSON) 파싱용 (헤더온리) ---
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.11.3
+  GIT_SHALLOW TRUE
+)
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+FetchContent_MakeAvailable(nlohmann_json)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json)
+# 서드파티 헤더를 SYSTEM include 로 → 템플릿 -Werror 회피 (IXWebSocket 과 동일)
+get_target_property(_njson_inc nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+if(_njson_inc)
+  target_include_directories(${CMAKE_PROJECT_NAME} SYSTEM PRIVATE ${_njson_inc})
+endif()
+
 # macOS SDK 26+ 에서 AGL 프레임워크 제거됨. Qt6 FindWrapOpenGL 이 라이브 FS 의
 # /System/Library/Frameworks/AGL.framework 를 find_library 로 찾아 -framework AGL 을 링크하지만,
 # SDK(MacOSX26.5) 에는 AGL 이 없어 "ld: framework 'AGL' not found" 로 실패한다.
@@ -82,6 +98,9 @@ if(ENABLE_QT)
   )
 endif()
 
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.cpp src/interpreter-dock.cpp src/interpreter-dock.hpp)
+target_sources(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE src/plugin-main.cpp src/interpreter-engine.cpp src/interpreter-engine.hpp src/interpreter-dock.cpp
+          src/interpreter-dock.hpp)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

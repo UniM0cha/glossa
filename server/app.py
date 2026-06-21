@@ -6,9 +6,12 @@
 
 서비스 LIVE 이고 그 언어 구독자가 있을 때만 해당 Gemini 세션이 돈다(비용 게이팅).
 """
+import asyncio
 import json
 import logging
 import os
+import time
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -26,10 +29,32 @@ log = logging.getLogger("app")
 SERVICE_KEY = os.environ.get("SERVICE_KEY", "changeme")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-app = FastAPI(title="OBS Live Interpreter")
+async def _status_ticker():
+    """LIVE 동안 모니터링 상태(진행시간 등)를 주기적으로 푸시 — 플러그인 도크 갱신용."""
+    while True:
+        await asyncio.sleep(3)
+        if live_since is not None:
+            try:
+                await broadcast_status()
+            except Exception:
+                pass
 
-# lang -> set[WebSocket]  (폰 구독자)
+
+@asynccontextmanager
+async def lifespan(_app):
+    task = asyncio.create_task(_status_ticker())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+app = FastAPI(title="OBS Live Interpreter", lifespan=lifespan)
+
+# lang -> set[WebSocket] (폰 구독자) / ingress 연결들 / LIVE 시작 시각(epoch)
 listeners: dict[str, set] = {}
+ingress_conns: set = set()
+live_since: float | None = None
 
 
 async def broadcast_audio(lang: str, pcm: bytes):
@@ -59,22 +84,27 @@ mgr = SessionManager(broadcast_audio, on_transcript=handle_transcript)
 
 
 def status_payload() -> str:
+    counts = {lang: len(s) for lang, s in listeners.items() if s}
     return json.dumps({
         "type": "status",
         "live": mgr.live,
         "engine": mgr.engine,
         "langs": mgr.active_langs(),
+        "durationSec": int(time.time() - live_since) if live_since else 0,
+        "listeners": counts,        # 언어별 청취자 수
+        "total": sum(counts.values()),
     })
 
 
 async def broadcast_status():
     payload = status_payload()
-    for subs in listeners.values():
-        for ws in list(subs):
-            try:
-                await ws.send_text(payload)
-            except Exception:
-                pass
+    targets = [ws for subs in listeners.values() for ws in list(subs)]
+    targets += list(ingress_conns)  # 폰 + 플러그인(ingress) 양쪽에 상태 전송
+    for ws in targets:
+        try:
+            await ws.send_text(payload)
+        except Exception:
+            pass
 
 
 @app.websocket("/ingress")
@@ -83,8 +113,11 @@ async def ingress(ws: WebSocket):
         await ws.close(code=4401)
         log.warning("ingress 인증 실패")
         return
+    global live_since
     engine = ws.query_params.get("engine", "gemini")
     await ws.accept()
+    ingress_conns.add(ws)
+    live_since = time.time()
     log.info("ingress 연결됨 → 서비스 LIVE (engine=%s)", engine)
     await mgr.set_live(True, engine=engine)
     await broadcast_status()
@@ -99,6 +132,9 @@ async def ingress(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        ingress_conns.discard(ws)
+        if not ingress_conns:
+            live_since = None
         log.info("ingress 끊김 → 서비스 IDLE")
         await mgr.set_live(False)
         await broadcast_status()
