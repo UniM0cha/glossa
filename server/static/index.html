@@ -27,16 +27,16 @@
   .big.stop { background: #ef4444; color: #fff; }
   .big:disabled { opacity: .4; }
   .hint { font-size: 12px; color: #6b7280; text-align: center; line-height: 1.5; }
-  .caption { flex: 1; min-height: 110px; margin-top: 8px; padding: 14px 16px;
+  /* 흐르는 자막 — 위→아래로 쌓이고 자동 스크롤로 음성 위치를 따라감 */
+  .caption { flex: 1; min-height: 120px; margin-top: 8px; padding: 14px 16px;
          border-radius: 12px; background: #11141a; border: 1px solid #2a2e37;
-         display: flex; flex-direction: column; justify-content: flex-end; gap: 8px;
-         overflow: hidden; }
-  /* 직전 문장(흐리게, 위) + 현재 문장(또렷, 아래·하단정렬) — 문장 끝에만 한 칸 이동 */
-  .cap-prev { font-size: 15px; line-height: 1.4; color: #9aa0a6; opacity: .55;
+         overflow-y: auto; font-size: 19px; line-height: 1.6;
          white-space: pre-wrap; word-break: break-word; }
-  .cap-cur { font-size: 21px; line-height: 1.5; color: #f1f3f4; font-weight: 500;
-         white-space: pre-wrap; word-break: break-word; }
-  .cap-cur.placeholder { font-size: 14px; font-weight: 400; color: #4b5563; }
+  /* 모든 글자 동일 크기 — 음성으로 나온(들린) 부분만 굵게/밝게, 곧 나올 부분은 연하게 */
+  .caption .heard { color: #f1f3f4; font-weight: 700; }
+  .caption .ahead { color: #9aa0a6; font-weight: 400; }
+  .caption.empty::before { content: "자막이 여기에 표시됩니다 / Subtitles appear here";
+         color: #4b5563; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -48,10 +48,7 @@
   <div class="label">언어 선택 / Select language</div>
   <div class="langs" id="langs"></div>
   <div class="label">실시간 자막 / Live subtitles</div>
-  <div id="caption" class="caption">
-    <div id="cap-prev" class="cap-prev"></div>
-    <div id="cap-cur" class="cap-cur"></div>
-  </div>
+  <div id="caption" class="caption empty"></div>
   <button id="toggle" class="big" disabled>듣기 시작</button>
   <div class="hint">언어를 고르고 <b>듣기 시작</b>을 누른 뒤 대기하세요.<br>
        예배가 시작되면 자동으로 통역 음성이 나옵니다.</div>
@@ -71,10 +68,11 @@ let ws = null, audioCtx = null, playHead = 0, listening = false, live = false;
 const statusEl = document.getElementById("status");
 const toggleEl = document.getElementById("toggle");
 const langsEl = document.getElementById("langs");
-const capPrevEl = document.getElementById("cap-prev");
-const capCurEl = document.getElementById("cap-cur");
-let prevSentence = "", curSentence = "";
-const SENT_END = /[.?!。！？]$/;
+const captionEl = document.getElementById("caption");
+let segments = [];     // {el, playAt} — 자막 조각마다 그 음성이 재생될 대략 시각 기록
+let boldIndex = 0;     // segments[< boldIndex] 는 이미 음성으로 나온(heard) 부분
+let rafId = null;
+const MAX_SEG = 600;   // 누적 상한(sliding window) — 오래된 건 제거해 모바일 렉 방지
 
 function renderLangs() {
   langsEl.innerHTML = "";
@@ -96,45 +94,56 @@ function setStatus(text, isLive) {
   statusEl.classList.toggle("live", !!isLive);
 }
 
-function renderCaption() {
-  capPrevEl.textContent = prevSentence;
-  if (!prevSentence && !curSentence) {
-    capCurEl.textContent = "자막이 여기에 표시됩니다 / Subtitles appear here";
-    capCurEl.classList.add("placeholder");
-  } else {
-    capCurEl.textContent = curSentence;
-    capCurEl.classList.remove("placeholder");
-  }
+function clearCaption() {
+  segments = [];
+  boldIndex = 0;
+  captionEl.innerHTML = "";
+  captionEl.classList.add("empty");
 }
-
-function clearCaption() { prevSentence = ""; curSentence = ""; renderCaption(); }
 
 function addCaption(delta) {
-  curSentence += delta;
-  const trimmed = curSentence.replace(/\s+$/, "");
-  if (trimmed.length >= 2 && SENT_END.test(trimmed)) {
-    // 문장 완성 → 직전 문장으로 이월, 현재 비움 (위로 이동은 여기서만)
-    prevSentence = trimmed;
-    curSentence = "";
-  } else if (curSentence.length > 160) {
-    // 문장부호 없이 길어지면 마지막 콤마/공백에서 끊어 이월(과성장 방지)
-    const cut = Math.max(curSentence.lastIndexOf(", "), curSentence.lastIndexOf(" "));
-    if (cut > 40) {
-      prevSentence = curSentence.slice(0, cut + 1).trim();
-      curSentence = curSentence.slice(cut + 1);
-    } else {
-      prevSentence = curSentence.trim();
-      curSentence = "";
-    }
+  if (!delta) return;
+  const span = document.createElement("span");
+  span.className = "ahead";
+  span.textContent = delta;
+  captionEl.appendChild(span);
+  captionEl.classList.remove("empty");
+  // 이 자막의 음성이 재생될 대략 시각 = 현재 스케줄된 오디오 끝(playHead)
+  const playAt = audioCtx ? (playHead || audioCtx.currentTime) : 0;
+  segments.push({ el: span, playAt });
+  // sliding window: 오래된 조각 앞에서 제거(스크롤로 사라진 부분)
+  while (segments.length > MAX_SEG) {
+    const old = segments.shift();
+    if (old.el.parentNode) old.el.parentNode.removeChild(old.el);
+    if (boldIndex > 0) boldIndex--;
   }
-  renderCaption();
 }
+
+function captionTick() {
+  if (audioCtx && segments.length) {
+    const now = audioCtx.currentTime;
+    // 음성이 지나간 조각을 굵게(heard)로 — 크기는 그대로, 굵기·색만 변함
+    while (boldIndex < segments.length && segments[boldIndex].playAt <= now) {
+      segments[boldIndex].el.className = "heard";
+      boldIndex++;
+    }
+    // 음성 위치(굵은 경계)를 화면 ~55% 에 두도록 부드럽게(lerp) 자동 스크롤
+    const edge = segments[Math.min(boldIndex, segments.length - 1)].el;
+    const target = Math.max(0, edge.offsetTop - captionEl.clientHeight * 0.55);
+    captionEl.scrollTop += (target - captionEl.scrollTop) * 0.15;
+  }
+  rafId = requestAnimationFrame(captionTick);
+}
+
+function startCaptionLoop() { if (!rafId) rafId = requestAnimationFrame(captionTick); }
+function stopCaptionLoop() { if (rafId) { cancelAnimationFrame(rafId); rafId = null; } }
 
 function start() {
   clearCaption();
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   audioCtx.resume();
   playHead = audioCtx.currentTime + 0.15;
+  startCaptionLoop();
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/listen?lang=${selected}`);
   ws.binaryType = "arraybuffer";
@@ -157,6 +166,7 @@ function start() {
 
 function stop() {
   listening = false;
+  stopCaptionLoop();
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   toggleEl.textContent = "듣기 시작";
   toggleEl.classList.remove("stop");
@@ -186,7 +196,7 @@ function playChunk(int16) {
 toggleEl.onclick = () => { listening ? stop() : start(); };
 renderLangs();
 updateStatus();
-renderCaption();
+clearCaption();
 toggleEl.disabled = false;
 </script>
 </body>
