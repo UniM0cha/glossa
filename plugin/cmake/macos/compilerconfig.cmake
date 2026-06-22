@@ -5,7 +5,13 @@ include_guard(GLOBAL)
 option(ENABLE_COMPILER_TRACE "Enable clang time-trace" OFF)
 mark_as_advanced(ENABLE_COMPILER_TRACE)
 
-if(NOT XCODE)
+# IDE 인덱싱용 탈출구. 기본 OFF = 기존처럼 Xcode generator 강제.
+# CLion/IntelliJ 인덱싱을 위해 Ninja 등 비-Xcode generator로 configure할 때만
+# `-DALLOW_NON_XCODE_GENERATOR=ON` 으로 이 가드를 해제한다.
+# 실제 서명 .plugin 빌드/릴리스는 반드시 Xcode generator로 해야 한다
+# (번들 Info.plist·codesign·hardened runtime이 CMAKE_XCODE_ATTRIBUTE_* 로만 적용되므로).
+option(ALLOW_NON_XCODE_GENERATOR "Allow non-Xcode generators for IDE indexing only" OFF)
+if(NOT XCODE AND NOT ALLOW_NON_XCODE_GENERATOR)
   message(FATAL_ERROR "Building OBS Studio on macOS requires Xcode generator.")
 endif()
 
@@ -48,7 +54,9 @@ function(check_sdk_requirements)
     )
   endif()
   message(DEBUG "Path to xcodebuild binary: ${obs_macos_xcodebuild}")
-  if(XCODE_VERSION VERSION_LESS obs_macos_minimum_xcode)
+  # XCODE_VERSION 은 Xcode generator일 때만 채워진다. 비-Xcode generator(IDE 인덱싱용 Ninja 등)에선
+  # 비어 있어 "" < 16.0 으로 오인되므로, 값이 있을 때만 버전을 검사한다.
+  if(XCODE_VERSION AND XCODE_VERSION VERSION_LESS obs_macos_minimum_xcode)
     message(
       FATAL_ERROR
       "Your Xcode version (${XCODE_VERSION}) is too low. Xcode ${obs_macos_minimum_xcode} is required to build OBS."
