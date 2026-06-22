@@ -36,10 +36,13 @@ public:
 	static InterpreterEngine &instance();
 
 	/* 설정 (도크에서 변경 → 영속화) */
-	void configure(const std::string &server_url, const std::string &service_key, const std::string &engine);
+	void configure(const std::string &server_url, const std::string &service_key, const std::string &engine,
+		       const std::string &speaker, bool voice_conversion);
 	std::string server_url();
 	std::string service_key();
 	std::string engine();
+	std::string speaker();
+	bool voice_conversion();
 
 	/* 선택 소스 (도크 체크박스) — 이름 목록. diff 해서 캡처콜백 등록/해제 */
 	void set_selected_sources(const std::vector<std::string> &names);
@@ -89,6 +92,8 @@ private:
 	std::string server_url_;
 	std::string service_key_;
 	std::string engine_{"gemini"};
+	std::string speaker_{"chae"};            /* 설교자 voice (음색 변환 ON 일 때) */
+	bool voice_conversion_{false};           /* 음색 변환 on/off */
 	std::atomic<uint32_t> rate_{16000};      /* 엔진 입력 레이트 */
 	std::atomic<size_t> chunk_bytes_{3200};  /* 100ms @ rate, s16 mono */
 

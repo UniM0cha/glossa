@@ -29,6 +29,17 @@ prototype/out*.wav
 server/out*.wav
 *.aiff
 
+# voice cloning 음원·모델·생성물 (큰 파일, 커밋 금지; voices.json·*.py 는 추적)
+prototype/voices/raw/
+prototype/voices/wav16/
+prototype/voices/models/
+prototype/voices/segments/
+prototype/voices/transcripts/
+prototype/voices/ab*/
+prototype/voices/*.wav
+prototype/voices/*.tsv
+prototype/voices/*.err
+
 # OS / 에디터
 .DS_Store
 .idea/

@@ -7,6 +7,7 @@ class QListWidget;
 class QListWidgetItem;
 class QLineEdit;
 class QComboBox;
+class QCheckBox;
 
 /* 통역 도크 — 통역할 오디오 소스 체크 + 서버/엔진 설정 + 시작/중지 + 서버 모니터링. */
 class InterpreterDock : public QWidget {
@@ -28,6 +29,8 @@ private:
 	QLineEdit *serverEdit = nullptr;
 	QLineEdit *keyEdit = nullptr;
 	QComboBox *engineBox = nullptr;
+	QComboBox *speakerBox = nullptr;
+	QCheckBox *voiceBox = nullptr;
 	QListWidget *sourceList = nullptr;
 	QLabel *status = nullptr;
 	QLabel *monitor = nullptr;

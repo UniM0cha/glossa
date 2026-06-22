@@ -18,10 +18,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-load_dotenv()  # .env (공유 기본값)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))  # server/.env (공유 기본값, cwd 무관)
 # .env.local: 머신별 실제 키(gitignore). .env 값을 오버라이드.
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env.local"), override=True)
 from session_manager import SessionManager  # noqa: E402  (load_dotenv 먼저)
+from voice import VoiceConverter  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("app")
@@ -75,12 +76,23 @@ async def broadcast_transcript(lang: str, text: str):
             pass
 
 
+# 음색 변환기: 합성 PCM 을 폰으로 송출(broadcast_audio 재사용)
+vc = VoiceConverter(broadcast_audio)
+
+
+async def gemini_audio_sink(lang: str, pcm: bytes):
+    # 음색 변환 ON 이면 원본 번역음성은 버리고 목사님 음색 TTS 만 송출, OFF 면 원본 송출
+    if not vc.enabled:
+        await broadcast_audio(lang, pcm)
+
+
 async def handle_transcript(lang: str, text: str):
     log.info("[%s] %s", lang, text)
     await broadcast_transcript(lang, text)
+    vc.feed(lang, text)   # 음색 ON 일 때만 내부에서 문장 단위 합성·송출
 
 
-mgr = SessionManager(broadcast_audio, on_transcript=handle_transcript)
+mgr = SessionManager(gemini_audio_sink, on_transcript=handle_transcript)
 
 
 def status_payload() -> str:
@@ -89,6 +101,8 @@ def status_payload() -> str:
         "type": "status",
         "live": mgr.live,
         "engine": mgr.engine,
+        "speaker": vc.speaker,
+        "voice": vc.enabled,
         "langs": mgr.active_langs(),
         "durationSec": int(time.time() - live_since) if live_since else 0,
         "listeners": counts,        # 언어별 청취자 수
@@ -115,10 +129,12 @@ async def ingress(ws: WebSocket):
         return
     global live_since
     engine = ws.query_params.get("engine", "gemini")
+    speaker = ws.query_params.get("speaker")  # chae|lee|kwon → 음색 변환 ON, 없으면 OFF
     await ws.accept()
     ingress_conns.add(ws)
     live_since = time.time()
-    log.info("ingress 연결됨 → 서비스 LIVE (engine=%s)", engine)
+    vc.set_speaker(speaker)
+    log.info("ingress 연결됨 → 서비스 LIVE (engine=%s, speaker=%s)", engine, speaker)
     await mgr.set_live(True, engine=engine)
     await broadcast_status()
     try:
@@ -135,6 +151,10 @@ async def ingress(ws: WebSocket):
         ingress_conns.discard(ws)
         if not ingress_conns:
             live_since = None
+        for lang in list(vc.buffers):
+            vc.flush(lang)   # 끊기기 전 남은 미완성 문장도 합성
+        vc.set_speaker(None)
+        vc.reset()
         log.info("ingress 끊김 → 서비스 IDLE")
         await mgr.set_live(False)
         await broadcast_status()

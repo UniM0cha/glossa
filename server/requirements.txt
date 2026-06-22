@@ -4,3 +4,4 @@ uvicorn[standard]>=0.30  # ASGI 서버 (websockets 포함)
 google-genai>=1.0.0      # Gemini Live Translate (Phase 0 검증 SDK)
 python-dotenv>=1.0.0     # .env 로드
 websockets>=12.0         # fake_plugin/test_listener 클라이언트용
+elevenlabs>=2.5          # 설교자 음색 TTS (voice.py)

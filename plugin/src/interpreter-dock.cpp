@@ -4,6 +4,7 @@
 
 #include <obs.h>
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -44,6 +45,13 @@ InterpreterDock::InterpreterDock(QWidget *parent) : QWidget(parent)
 	engineBox->addItem("Gemini (16kHz)", "gemini");
 	engineBox->addItem("OpenAI (24kHz)", "openai");
 
+	auto *lblVoice = new QLabel("설교자 음색 (Voice)", this);
+	voiceBox = new QCheckBox("설교자 본인 목소리로 변환", this);
+	speakerBox = new QComboBox(this);
+	speakerBox->addItem("채성렬 목사", "chae");
+	speakerBox->addItem("이호균 목사", "lee");
+	speakerBox->addItem("권순호 목사", "kwon");
+
 	auto *lblSrc = new QLabel("통역할 오디오 — 체크하면 합성되어 번역됩니다", this);
 	lblSrc->setWordWrap(true);
 	sourceList = new QListWidget(this);
@@ -66,6 +74,9 @@ InterpreterDock::InterpreterDock(QWidget *parent) : QWidget(parent)
 	layout->addWidget(keyEdit);
 	layout->addWidget(lblEngine);
 	layout->addWidget(engineBox);
+	layout->addWidget(lblVoice);
+	layout->addWidget(voiceBox);
+	layout->addWidget(speakerBox);
 	layout->addWidget(lblSrc);
 	layout->addWidget(sourceList);
 	layout->addWidget(status);
@@ -78,6 +89,8 @@ InterpreterDock::InterpreterDock(QWidget *parent) : QWidget(parent)
 	connect(serverEdit, &QLineEdit::editingFinished, this, &InterpreterDock::onSettingsChanged);
 	connect(keyEdit, &QLineEdit::editingFinished, this, &InterpreterDock::onSettingsChanged);
 	connect(engineBox, &QComboBox::currentIndexChanged, this, &InterpreterDock::onSettingsChanged);
+	connect(speakerBox, &QComboBox::currentIndexChanged, this, &InterpreterDock::onSettingsChanged);
+	connect(voiceBox, &QCheckBox::toggled, this, &InterpreterDock::onSettingsChanged);
 
 	auto *timer = new QTimer(this);
 	connect(timer, &QTimer::timeout, this, &InterpreterDock::refresh);
@@ -103,6 +116,14 @@ void InterpreterDock::reloadSettings()
 	if (idx >= 0)
 		engineBox->setCurrentIndex(idx);
 	engineBox->blockSignals(false);
+	speakerBox->blockSignals(true);
+	int sidx = speakerBox->findData(QString::fromStdString(e.speaker()));
+	if (sidx >= 0)
+		speakerBox->setCurrentIndex(sidx);
+	speakerBox->blockSignals(false);
+	voiceBox->blockSignals(true);
+	voiceBox->setChecked(e.voice_conversion());
+	voiceBox->blockSignals(false);
 }
 
 void InterpreterDock::rebuildSourceList()
@@ -137,7 +158,9 @@ void InterpreterDock::onSourceItemChanged(QListWidgetItem *)
 void InterpreterDock::onSettingsChanged()
 {
 	InterpreterEngine::instance().configure(serverEdit->text().toStdString(), keyEdit->text().toStdString(),
-						engineBox->currentData().toString().toStdString());
+						engineBox->currentData().toString().toStdString(),
+						speakerBox->currentData().toString().toStdString(),
+						voiceBox->isChecked());
 }
 
 void InterpreterDock::onToggle()

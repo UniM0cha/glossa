@@ -22,9 +22,8 @@ import wave
 import websockets
 from dotenv import load_dotenv
 
-load_dotenv()
-
 HERE = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(HERE, ".env"))
 WAV = os.path.join(HERE, "..", "prototype", "samples", "sermon_ko_16k.wav")
 SERVICE_KEY = os.environ.get("SERVICE_KEY", "changeme")
 
@@ -61,11 +60,14 @@ async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("base", nargs="?", default="ws://localhost:8000", help="서버 베이스 URL")
     ap.add_argument("--engine", choices=["gemini", "openai"], default="gemini")
+    ap.add_argument("--speaker", default=None, help="chae|lee|kwon (음색 변환 ON). 없으면 원본 번역음성")
     args = ap.parse_args()
 
     target_rate = ENGINE_RATE[args.engine]
     chunk = target_rate // 5  # 100ms @ rate, s16 mono = rate/1000*100*2 바이트
     url = f"{args.base}/ingress?key={SERVICE_KEY}&engine={args.engine}"
+    if args.speaker:
+        url += f"&speaker={args.speaker}"
 
     with wave.open(WAV, "rb") as w:
         if (w.getnchannels(), w.getsampwidth(), w.getframerate()) != (1, 2, 16000):

@@ -36,13 +36,16 @@ InterpreterEngine::~InterpreterEngine()
 }
 
 /* ───────────────── 설정 ───────────────── */
-void InterpreterEngine::configure(const std::string &url, const std::string &key, const std::string &eng)
+void InterpreterEngine::configure(const std::string &url, const std::string &key, const std::string &eng,
+				  const std::string &speaker, bool voice_conversion)
 {
 	{
 		std::lock_guard<std::mutex> lk(cfg_mtx_);
 		server_url_ = url;
 		service_key_ = key;
 		engine_ = (eng == "openai") ? "openai" : "gemini";
+		speaker_ = speaker;
+		voice_conversion_ = voice_conversion;
 	}
 	if (enabled_.load()) {
 		apply_engine_rate();
@@ -68,6 +71,16 @@ std::string InterpreterEngine::engine()
 {
 	std::lock_guard<std::mutex> lk(cfg_mtx_);
 	return engine_;
+}
+std::string InterpreterEngine::speaker()
+{
+	std::lock_guard<std::mutex> lk(cfg_mtx_);
+	return speaker_;
+}
+bool InterpreterEngine::voice_conversion()
+{
+	std::lock_guard<std::mutex> lk(cfg_mtx_);
+	return voice_conversion_;
 }
 
 void InterpreterEngine::apply_engine_rate()
@@ -103,6 +116,8 @@ void InterpreterEngine::rebuild_ws_url()
 	{
 		std::lock_guard<std::mutex> lk(cfg_mtx_);
 		url = server_url_ + "/ingress?key=" + service_key_ + "&engine=" + engine_;
+		if (voice_conversion_ && !speaker_.empty())
+			url += "&speaker=" + speaker_; /* 음색 변환 ON 일 때만 → 서버가 speaker 유무로 토글 */
 	}
 	ws_.setUrl(url);
 }
@@ -420,6 +435,8 @@ void InterpreterEngine::save_config()
 		obs_data_set_string(d, "server_url", server_url_.c_str());
 		obs_data_set_string(d, "service_key", service_key_.c_str()); /* 키는 이 파일에만 */
 		obs_data_set_string(d, "engine", engine_.c_str());
+		obs_data_set_string(d, "speaker", speaker_.c_str());
+		obs_data_set_bool(d, "voice_conversion", voice_conversion_);
 	}
 	obs_data_set_bool(d, "enabled", enabled_.load());
 	obs_data_array_t *arr = obs_data_array_create();
@@ -459,6 +476,10 @@ void InterpreterEngine::load_config()
 		service_key_ = obs_data_get_string(d, "service_key");
 		std::string eng = obs_data_get_string(d, "engine");
 		engine_ = (eng == "openai") ? "openai" : "gemini";
+		speaker_ = obs_data_get_string(d, "speaker");
+		if (speaker_.empty())
+			speaker_ = "chae";
+		voice_conversion_ = obs_data_get_bool(d, "voice_conversion");
 		if (server_url_.empty())
 			server_url_ = "ws://localhost:8000";
 	}
