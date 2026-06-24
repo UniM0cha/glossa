@@ -118,7 +118,7 @@ if __name__ == "__main__":
 
     HERE = os.path.dirname(os.path.abspath(__file__))
     ROOT = os.path.dirname(HERE)
-    load_dotenv(os.path.join(HERE, ".env.local"))
+    load_dotenv(os.path.join(HERE, ".env"))
     logging.basicConfig(level=logging.INFO)
 
     async def main():

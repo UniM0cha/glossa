@@ -18,9 +18,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))  # server/.env (공유 기본값, cwd 무관)
-# .env.local: 머신별 실제 키(gitignore). .env 값을 오버라이드.
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env.local"), override=True)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))  # server/.env (gitignore — 로컬 키 전부, cwd 무관)
 from session_manager import SessionManager  # noqa: E402  (load_dotenv 먼저)
 from voice import VoiceConverter  # noqa: E402
 

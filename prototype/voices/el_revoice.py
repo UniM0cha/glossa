@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from elevenlabs import ElevenLabs
 
 ROOT = "/Users/solstice/Desktop/Toys/obs-live-interpreter"
-load_dotenv(f"{ROOT}/server/.env.local")
+load_dotenv(f"{ROOT}/server/.env")
 client = ElevenLabs(api_key=os.environ["ELEVENLABS_API_KEY"])
 OUT = f"{ROOT}/prototype/voices/voices.json"
 voices = json.load(open(OUT))
