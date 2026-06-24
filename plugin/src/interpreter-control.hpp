@@ -11,8 +11,9 @@ extern "C" {
 enum interpreter_state_t {
 	INTERP_NONE = 0,   /* 등록된 통역 필터 없음 */
 	INTERP_OFF,        /* 모두 OFF */
-	INTERP_CONNECTING, /* ON 이지만 서버 미연결 */
+	INTERP_CONNECTING, /* ON 이지만 서버 미연결 (시도 중) */
 	INTERP_LIVE,       /* ON + 서버 연결됨 */
+	INTERP_ERROR,      /* ON 이지만 연결 실패 — 인증/네트워크 (사유는 connection_error()) */
 };
 
 /* 등록된 모든 통역 필터의 집계 상태 */

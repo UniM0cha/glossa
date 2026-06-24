@@ -39,6 +39,7 @@ public:
 	void configure(const std::string &server_url, const std::string &service_key, const std::string &engine,
 		       const std::string &speaker, bool voice_conversion);
 	std::string server_url();
+	std::string http_base(); /* server_url → https://host or http://host (도크 /speakers 조회용) */
 	std::string service_key();
 	std::string engine();
 	std::string speaker();
@@ -57,6 +58,9 @@ public:
 
 	/* 모니터링 (도크 폴링) */
 	ServerStatus status();
+
+	/* 마지막 연결 실패 사유 (사람이 읽을 한국어 메시지). 연결 성공/정상이면 빈 문자열. */
+	std::string connection_error();
 
 	/* 영속성 (obs_module_config_path) */
 	void load_config();
@@ -86,13 +90,15 @@ private:
 	void ws_worker_fn();               /* upload_buf → ws.sendBinary (100ms 청크) */
 	void on_ws_message(const ix::WebSocketMessagePtr &msg);
 	void parse_status(const std::string &text);
+	void set_conn_error(const std::string &msg); /* 연결 실패 사유 저장 (락 보유) */
+	void clear_conn_error();                      /* 새 연결 시도 직전 초기화 */
 
 	/* --- 설정 --- */
 	std::mutex cfg_mtx_;
 	std::string server_url_;
 	std::string service_key_;
 	std::string engine_{"gemini"};
-	std::string speaker_{"chae"};            /* 설교자 voice (음색 변환 ON 일 때) */
+	std::string speaker_;                    /* 설교자 voice key (음색 변환 ON, 빈값=미선택) */
 	bool voice_conversion_{false};           /* 음색 변환 on/off */
 	std::atomic<uint32_t> rate_{16000};      /* 엔진 입력 레이트 */
 	std::atomic<size_t> chunk_bytes_{3200};  /* 100ms @ rate, s16 mono */
@@ -127,4 +133,8 @@ private:
 	/* --- 서버 상태 --- */
 	std::mutex status_mtx_;
 	ServerStatus status_;
+
+	/* --- 마지막 연결 실패 사유 (Error/Close 이벤트 → 도크 노출) --- */
+	std::mutex conn_mtx_;
+	std::string conn_error_;
 };

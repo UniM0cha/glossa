@@ -15,7 +15,13 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <thread>
 #include <vector>
+
+#include <QMetaObject>
+
+#include <ixwebsocket/IXHttpClient.h>
+#include <nlohmann/json.hpp>
 
 /* obs_enum_sources 콜백 — 오디오 출력 플래그가 있는 소스 이름만 수집 */
 static bool enum_audio_sources(void *p, obs_source_t *s)
@@ -35,8 +41,9 @@ InterpreterDock::InterpreterDock(QWidget *parent) : QWidget(parent)
 	layout->setContentsMargins(12, 12, 12, 12);
 	layout->setSpacing(8);
 
-	auto *lblServer = new QLabel("서버 주소 (Server URL)", this);
+	auto *lblServer = new QLabel("서버 주소 (청취 페이지 URL)", this);
 	serverEdit = new QLineEdit(this);
+	serverEdit->setPlaceholderText("https://your-host.example.com");
 	auto *lblKey = new QLabel("서비스 키 (Service Key)", this);
 	keyEdit = new QLineEdit(this);
 	keyEdit->setEchoMode(QLineEdit::Password);
@@ -48,9 +55,7 @@ InterpreterDock::InterpreterDock(QWidget *parent) : QWidget(parent)
 	auto *lblVoice = new QLabel("설교자 음색 (Voice)", this);
 	voiceBox = new QCheckBox("설교자 본인 목소리로 변환", this);
 	speakerBox = new QComboBox(this);
-	speakerBox->addItem("채성렬 목사", "chae");
-	speakerBox->addItem("이호균 목사", "lee");
-	speakerBox->addItem("권순호 목사", "kwon");
+	speakerBox->setEnabled(false); /* 서버에서 목록 받기 전엔 비활성 — fetchSpeakers 가 채운다 */
 
 	auto *lblSrc = new QLabel("통역할 오디오 — 체크하면 합성되어 번역됩니다", this);
 	lblSrc->setWordWrap(true);
@@ -86,8 +91,11 @@ InterpreterDock::InterpreterDock(QWidget *parent) : QWidget(parent)
 
 	connect(button, &QPushButton::clicked, this, &InterpreterDock::onToggle);
 	connect(sourceList, &QListWidget::itemChanged, this, &InterpreterDock::onSourceItemChanged);
+	/* 주소/키 확정 시 먼저 엔진에 저장(onSettingsChanged) → 그 값으로 설교자 목록 재조회(fetchSpeakers) */
 	connect(serverEdit, &QLineEdit::editingFinished, this, &InterpreterDock::onSettingsChanged);
+	connect(serverEdit, &QLineEdit::editingFinished, this, &InterpreterDock::fetchSpeakers);
 	connect(keyEdit, &QLineEdit::editingFinished, this, &InterpreterDock::onSettingsChanged);
+	connect(keyEdit, &QLineEdit::editingFinished, this, &InterpreterDock::fetchSpeakers);
 	connect(engineBox, &QComboBox::currentIndexChanged, this, &InterpreterDock::onSettingsChanged);
 	connect(speakerBox, &QComboBox::currentIndexChanged, this, &InterpreterDock::onSettingsChanged);
 	connect(voiceBox, &QCheckBox::toggled, this, &InterpreterDock::onSettingsChanged);
@@ -99,6 +107,7 @@ InterpreterDock::InterpreterDock(QWidget *parent) : QWidget(parent)
 	reloadSettings();
 	rebuildSourceList();
 	refresh();
+	fetchSpeakers(); /* 저장된 서버 주소로 설교자 목록 초기 로드 */
 }
 
 void InterpreterDock::reloadSettings()
@@ -171,7 +180,9 @@ void InterpreterDock::onToggle()
 
 void InterpreterDock::refresh()
 {
-	switch (InterpreterEngine::instance().state()) {
+	auto &eng = InterpreterEngine::instance();
+	status->setStyleSheet(""); /* 매 갱신마다 리셋 — ERROR 빨강이 다른 상태로 남지 않게 */
+	switch (eng.state()) {
 	case INTERP_NONE:
 		status->setText("통역할 오디오 소스를\n위에서 체크하세요");
 		button->setText("통역 시작");
@@ -196,6 +207,13 @@ void InterpreterDock::refresh()
 		button->setEnabled(true);
 		button->setStyleSheet("background:#dc2626; color:white; font-weight:bold; font-size:15px;");
 		break;
+	case INTERP_ERROR:
+		status->setStyleSheet("color:#dc2626; font-weight:bold;");
+		status->setText("⚠  연결 실패\n" + QString::fromStdString(eng.connection_error()));
+		button->setText("통역 중지");
+		button->setEnabled(true);
+		button->setStyleSheet("background:#dc2626; color:white; font-weight:bold; font-size:15px;");
+		break;
 	}
 
 	/* 모니터링 패널 */
@@ -213,4 +231,76 @@ void InterpreterDock::refresh()
 	} else {
 		monitor->setText("— 서버 대기 중 —");
 	}
+}
+
+/* ───────────────── 설교자 목록 (서버 /speakers 동적 조회) ───────────────── */
+void InterpreterDock::fetchSpeakers()
+{
+	auto &eng = InterpreterEngine::instance();
+	std::string server = eng.server_url();
+	std::string url = eng.http_base() + "/speakers?key=" + eng.service_key();
+	int gen = ++fetchGen_;
+
+	if (server.empty()) { /* 주소 미입력 — 네트워크 시도 없이 안내만 */
+		populateSpeakers({}, false, gen);
+		return;
+	}
+
+	/* HTTP GET 은 워커 스레드에서(아키텍처 규칙: GUI/콜백 비블로킹). 결과는 GUI 스레드로 큐잉. */
+	std::thread([this, url, gen]() {
+		std::vector<std::pair<std::string, std::string>> list;
+		bool ok = false;
+		ix::HttpClient client(false);
+		auto args = client.createRequest();
+		args->connectTimeout = 5;
+		args->transferTimeout = 5;
+		auto resp = client.get(url, args);
+		if (resp && resp->statusCode == 200) {
+			auto j = nlohmann::json::parse(resp->body, nullptr, false);
+			if (j.is_array()) {
+				ok = true;
+				for (const auto &e : j) {
+					std::string k = e.value("key", std::string());
+					std::string l = e.value("label", std::string());
+					if (!k.empty())
+						list.emplace_back(k, l.empty() ? k : l);
+				}
+			}
+		}
+		QMetaObject::invokeMethod(
+			this, [this, list, ok, gen]() { populateSpeakers(list, ok, gen); }, Qt::QueuedConnection);
+	}).detach();
+}
+
+void InterpreterDock::populateSpeakers(const std::vector<std::pair<std::string, std::string>> &list, bool ok,
+				       int gen)
+{
+	if (gen != fetchGen_.load())
+		return; /* 더 최신 요청이 진행 중 → 이 응답은 버린다 */
+
+	auto &eng = InterpreterEngine::instance();
+	std::string prev = eng.speaker(); /* 기존 선택 복원용 */
+	bool has = !list.empty();
+
+	speakerBox->blockSignals(true);
+	voiceBox->blockSignals(true);
+	speakerBox->clear();
+	if (has) {
+		for (const auto &p : list)
+			speakerBox->addItem(QString::fromStdString(p.second), QString::fromStdString(p.first));
+		int idx = speakerBox->findData(QString::fromStdString(prev));
+		speakerBox->setCurrentIndex(idx >= 0 ? idx : 0);
+	} else {
+		const char *msg = eng.server_url().empty() ? "서버 주소를 먼저 입력하세요"
+				  : ok                       ? "등록된 설교자가 없습니다"
+							     : "설교자 목록을 불러오지 못했습니다";
+		speakerBox->addItem(msg); /* data 없음 → 선택해도 speaker 미설정 */
+		voiceBox->setChecked(false);
+	}
+	speakerBox->setEnabled(has);
+	voiceBox->setEnabled(has);
+	speakerBox->blockSignals(false);
+	voiceBox->blockSignals(false);
+
+	onSettingsChanged(); /* 현재 speakerBox 선택 + voiceBox 상태를 엔진에 1회 반영 */
 }

@@ -15,12 +15,12 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))  # server/.env (gitignore — 로컬 키 전부, cwd 무관)
 from session_manager import SessionManager  # noqa: E402  (load_dotenv 먼저)
-from voice import VoiceConverter  # noqa: E402
+from voice import VoiceConverter, speaker_list  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("app")
@@ -177,6 +177,14 @@ async def listen(ws: WebSocket):
         listeners.get(lang, set()).discard(ws)
         await mgr.remove_subscriber(lang)
         log.info("listen 끊김 lang=%s", lang)
+
+
+@app.get("/speakers")
+async def speakers(key: str = ""):
+    """도크 설교자 드롭다운용 목록. service_key 로 보호(실명 노출 방지). voice_id 는 안 내려준다."""
+    if key != SERVICE_KEY:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return speaker_list()
 
 
 @app.get("/")

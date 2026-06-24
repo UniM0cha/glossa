@@ -51,6 +51,7 @@ void InterpreterEngine::configure(const std::string &url, const std::string &key
 		apply_engine_rate();
 		ws_.stop();
 		ws_ready_ = false;
+		clear_conn_error(); /* 설정 변경 → 새 시도, 이전 실패 사유 제거 */
 		rebuild_ws_url();
 		ws_.start();
 	}
@@ -110,16 +111,46 @@ void InterpreterEngine::apply_engine_rate()
 	}
 }
 
+/* server_url_ 입력을 (scheme, host) 로 분리하고 끝의 '/' 제거.
+ * 운영자는 폰 청취 페이지 주소(https://host)를 그대로 입력 → 플러그인이 wss/http base 로 변환한다. */
+static void split_url(const std::string &url, std::string &scheme, std::string &host)
+{
+	auto p = url.find("://");
+	if (p != std::string::npos) {
+		scheme = url.substr(0, p);
+		host = url.substr(p + 3);
+	} else {
+		scheme.clear();
+		host = url;
+	}
+	while (!host.empty() && host.back() == '/')
+		host.pop_back();
+}
+
 void InterpreterEngine::rebuild_ws_url()
 {
 	std::string url;
 	{
 		std::lock_guard<std::mutex> lk(cfg_mtx_);
-		url = server_url_ + "/ingress?key=" + service_key_ + "&engine=" + engine_;
+		std::string scheme, host;
+		split_url(server_url_, scheme, host);
+		/* https/wss → wss(보안), 그 외(http/ws/스킴없음) → ws */
+		const char *ws = (scheme == "https" || scheme == "wss") ? "wss://" : "ws://";
+		url = ws + host + "/ingress?key=" + service_key_ + "&engine=" + engine_;
 		if (voice_conversion_ && !speaker_.empty())
 			url += "&speaker=" + speaker_; /* 음색 변환 ON 일 때만 → 서버가 speaker 유무로 토글 */
 	}
 	ws_.setUrl(url);
+}
+
+std::string InterpreterEngine::http_base()
+{
+	std::lock_guard<std::mutex> lk(cfg_mtx_);
+	std::string scheme, host;
+	split_url(server_url_, scheme, host);
+	/* https/wss → https, 그 외 → http. 도크가 여기에 "/speakers?key=" 를 붙여 GET. */
+	const char *http = (scheme == "https" || scheme == "wss") ? "https://" : "http://";
+	return std::string(http) + host;
 }
 
 /* ───────────────── 선택 소스 ───────────────── */
@@ -334,16 +365,34 @@ void InterpreterEngine::on_ws_message(const ix::WebSocketMessagePtr &msg)
 	switch (msg->type) {
 	case ix::WebSocketMessageType::Open:
 		ws_ready_ = true;
+		clear_conn_error(); /* 연결 성공 → 이전 실패 사유 제거 */
 		obs_log(LOG_INFO, "[interpreter] 서버 연결됨");
 		break;
-	case ix::WebSocketMessageType::Close:
+	case ix::WebSocketMessageType::Close: {
 		ws_ready_ = false;
-		obs_log(LOG_INFO, "[interpreter] 서버 연결 끊김");
+		uint16_t code = msg->closeInfo.code;
+		/* 정상 종료(stop()/1000/1001)는 에러로 취급하지 않음. 인증 거부 코드(4401)만 사유 저장. */
+		if (code == 4401)
+			set_conn_error("서비스 키가 올바르지 않습니다 — 키를 확인하세요");
+		obs_log(LOG_INFO, "[interpreter] 서버 연결 끊김 (code=%u %s)", code,
+			msg->closeInfo.reason.c_str());
 		break;
-	case ix::WebSocketMessageType::Error:
+	}
+	case ix::WebSocketMessageType::Error: {
 		ws_ready_ = false;
-		obs_log(LOG_WARNING, "[interpreter] WS 오류: %s", msg->errorInfo.reason.c_str());
+		int st = msg->errorInfo.http_status;
+		const std::string &reason = msg->errorInfo.reason;
+		std::string m;
+		if (st == 401 || st == 403 || st == 4401)
+			m = "서비스 키가 올바르지 않습니다 — 키를 확인하세요";
+		else if (st > 0)
+			m = "서버 오류 (HTTP " + std::to_string(st) + ")";
+		else
+			m = "서버에 연결할 수 없습니다 — 주소·네트워크를 확인하거나 서버 실행 여부를 점검하세요";
+		set_conn_error(m);
+		obs_log(LOG_WARNING, "[interpreter] WS 오류: status=%d reason=%s", st, reason.c_str());
 		break;
+	}
 	case ix::WebSocketMessageType::Message:
 		if (!msg->binary)
 			parse_status(msg->str);
@@ -351,6 +400,24 @@ void InterpreterEngine::on_ws_message(const ix::WebSocketMessagePtr &msg)
 	default:
 		break;
 	}
+}
+
+void InterpreterEngine::set_conn_error(const std::string &msg)
+{
+	std::lock_guard<std::mutex> lk(conn_mtx_);
+	conn_error_ = msg;
+}
+
+void InterpreterEngine::clear_conn_error()
+{
+	std::lock_guard<std::mutex> lk(conn_mtx_);
+	conn_error_.clear();
+}
+
+std::string InterpreterEngine::connection_error()
+{
+	std::lock_guard<std::mutex> lk(conn_mtx_);
+	return conn_error_;
 }
 
 void InterpreterEngine::parse_status(const std::string &text)
@@ -387,6 +454,7 @@ void InterpreterEngine::start()
 	enabled_ = true;
 	ws_.stop();
 	ws_ready_ = false;
+	clear_conn_error(); /* 새 시도 → 이전 실패 사유 제거 (INTERP_CONNECTING 부터 시작) */
 	rebuild_ws_url();
 	ws_.start();
 	save_config();
@@ -423,7 +491,14 @@ int InterpreterEngine::state()
 	}
 	if (!enabled_.load())
 		return INTERP_OFF;
-	return ws_ready_.load() ? INTERP_LIVE : INTERP_CONNECTING;
+	if (ws_ready_.load())
+		return INTERP_LIVE;
+	{
+		std::lock_guard<std::mutex> lk(conn_mtx_);
+		if (!conn_error_.empty())
+			return INTERP_ERROR; /* 연결 실패 사유 있음 → 시도 중과 구분 */
+	}
+	return INTERP_CONNECTING;
 }
 
 /* ───────────────── 영속성 ───────────────── */
@@ -476,9 +551,7 @@ void InterpreterEngine::load_config()
 		service_key_ = obs_data_get_string(d, "service_key");
 		std::string eng = obs_data_get_string(d, "engine");
 		engine_ = (eng == "openai") ? "openai" : "gemini";
-		speaker_ = obs_data_get_string(d, "speaker");
-		if (speaker_.empty())
-			speaker_ = "chae";
+		speaker_ = obs_data_get_string(d, "speaker"); /* 빈값 허용 — 서버 목록 받은 뒤 도크가 선택 */
 		voice_conversion_ = obs_data_get_bool(d, "voice_conversion");
 		if (server_url_.empty())
 			server_url_ = "ws://localhost:8000";

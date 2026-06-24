@@ -1,6 +1,11 @@
 #pragma once
 #include <QWidget>
 
+#include <atomic>
+#include <string>
+#include <utility>
+#include <vector>
+
 class QPushButton;
 class QLabel;
 class QListWidget;
@@ -24,8 +29,12 @@ private slots:
 	void onSourceItemChanged(QListWidgetItem *item);
 	void onSettingsChanged();
 	void refresh(); /* 500ms 폴링: 상태등 + 모니터링 갱신 */
+	void fetchSpeakers(); /* 서버 /speakers 비동기 조회 → speakerBox 갱신 */
 
 private:
+	/* fetchSpeakers 워커 결과를 GUI 스레드에서 적용 (gen 으로 최신 요청만 반영) */
+	void populateSpeakers(const std::vector<std::pair<std::string, std::string>> &list, bool ok, int gen);
+
 	QLineEdit *serverEdit = nullptr;
 	QLineEdit *keyEdit = nullptr;
 	QComboBox *engineBox = nullptr;
@@ -35,5 +44,6 @@ private:
 	QLabel *status = nullptr;
 	QLabel *monitor = nullptr;
 	QPushButton *button = nullptr;
-	bool buildingList = false; /* 재구성 중 itemChanged 무시 */
+	bool buildingList = false;           /* 재구성 중 itemChanged 무시 */
+	std::atomic<int> fetchGen_{0};       /* /speakers 요청 세대 — 늦게 도착한 옛 응답 무시 */
 };

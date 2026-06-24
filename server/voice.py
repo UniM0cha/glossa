@@ -10,6 +10,7 @@
 - Phase B 확정: eleven_multilingual_v2 + sim 1.0 + speaker_boost + speed 0.8.
 """
 import asyncio
+import json
 import logging
 import os
 import re
@@ -23,12 +24,32 @@ OUT_RATE = 24000
 VOICE_SETTINGS = VoiceSettings(stability=0.5, similarity_boost=1.0,
                                use_speaker_boost=True, speed=0.8)
 
-# 설교자 → voice_id (Phase B 확정, ElevenLabs IVC). voice_id 는 비밀이 아님.
-SPEAKERS = {
-    "chae": "2fCeiuAwCP4TyD4PVady",   # 채성렬
-    "lee":  "DUzFhVH4D9VyWzKVHkCy",   # 이호균
-    "kwon": "q4EzawyLqa1Ia3P8xqHT",   # 권순호
-}
+# 설교자 목록은 코드에 박지 않는다(실명·개인정보 노출 방지). 운영 서버의 env 로만 주입.
+#   env SPEAKERS_JSON 예: {"chae":{"label":"홍길동 목사","voice_id":"<ElevenLabs voice_id>"}, ...}
+#   key  : 플러그인↔서버가 주고받는 식별자(영문). label: 도크 드롭다운 표시명. voice_id: ElevenLabs IVC.
+# 미설정(빈 dict)이면 음색 변환은 항상 비활성으로 동작한다.
+def _load_speakers() -> dict:
+    raw = os.environ.get("SPEAKERS_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        log.warning("SPEAKERS_JSON 파싱 실패 — 음색 변환 비활성: %s", e)
+        return {}
+
+
+SPEAKERS = _load_speakers()
+
+
+def voice_id_for(key):
+    """설교자 key → voice_id (없으면 None)."""
+    return SPEAKERS.get(key, {}).get("voice_id") if key else None
+
+
+def speaker_list() -> list[dict]:
+    """도크 드롭다운용 목록 [{key,label}]. voice_id 는 노출하지 않는다."""
+    return [{"key": k, "label": v.get("label", k)} for k, v in SPEAKERS.items()]
 
 # 문장 경계: .!? (닫는 따옴표/괄호 허용) 뒤 공백 또는 끝
 _SENT = re.compile(r'(.+?[.!?]["\')\]]?)(\s+|$)', re.S)
@@ -49,7 +70,7 @@ class VoiceConverter:
     def set_speaker(self, speaker):
         """speaker key('chae'..) 또는 None. None 이면 음색 변환 비활성."""
         self.speaker = speaker
-        self.voice_id = SPEAKERS.get(speaker) if speaker else None
+        self.voice_id = voice_id_for(speaker)
         log.info("voice 설교자=%s (voice_id=%s)", speaker, self.voice_id)
 
     @property
