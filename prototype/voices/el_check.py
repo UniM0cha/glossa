@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 from elevenlabs import ElevenLabs
 
-ROOT = "/Users/solstice/Desktop/Toys/obs-live-interpreter"
+ROOT = "/Users/solstice/Desktop/Toys/glossa"
 load_dotenv(f"{ROOT}/server/.env")
 key = os.environ.get("ELEVENLABS_API_KEY", "")
 print("key set:", bool(key))

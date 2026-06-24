@@ -11,7 +11,7 @@ import wave
 from dotenv import load_dotenv
 from elevenlabs import ElevenLabs, VoiceSettings
 
-ROOT = "/Users/solstice/Desktop/Toys/obs-live-interpreter"
+ROOT = "/Users/solstice/Desktop/Toys/glossa"
 load_dotenv(f"{ROOT}/server/.env")
 client = ElevenLabs(api_key=os.environ["ELEVENLABS_API_KEY"])
 voices = json.load(open(f"{ROOT}/prototype/voices/voices.json"))
