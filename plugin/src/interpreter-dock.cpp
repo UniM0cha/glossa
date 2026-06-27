@@ -150,6 +150,11 @@ void InterpreterDock::onConfigLoaded()
 {
 	reloadSettings();
 	rebuildSourceList();
+	{
+		auto &e0 = InterpreterEngine::instance(); /* 저장된 엔드포인트는 이전에 유효했다고 신뢰
+							   * → 시작 시 조회 실패해도 speaker 보존 */
+		lastOkEndpoint_ = e0.server_url() + "\n" + e0.service_key();
+	}
 	configReady_ = true; /* 이제부터 사용자/조회에 의한 변경은 정상 저장된다 */
 	fetchSpeakers();     /* 로드된 server_url 로 /speakers 조회 */
 }
@@ -202,8 +207,23 @@ void InterpreterDock::onToggle()
 void InterpreterDock::refresh()
 {
 	auto &eng = InterpreterEngine::instance();
+
+	/* 통역 중(enabled)에는 ws 재시작을 유발하는 설정(서버/키/엔진/화자)을 잠근다 — stale 값으로 ws 가
+	 * 재시작되는 것을 원천 차단. 변경하려면 먼저 통역을 중지해야 한다.
+	 * 소스 목록은 잠그지 않는다: set_selected_sources 는 ws 와 무관(탭 등록/해제만)이고, 소스 없이
+	 * enabled 된 상태(INTERP_NONE → 버튼 비활성)에서 소스를 체크해 복구할 길이 막히면 안 되기 때문. */
+	int engState = eng.state();
+	/* 실제 통역 진행 중(CONNECTING/LIVE/ERROR)일 때만 잠근다. 소스 없음(NONE)·중지(OFF)는 편집 허용
+	 * — enabled 인데 소스가 없어 NONE 인 상태(버튼 비활성)에서 설정/중지 경로가 막히는 데드락 방지. */
+	bool editable = (engState == INTERP_NONE || engState == INTERP_OFF);
+	serverEdit->setEnabled(editable);
+	keyEdit->setEnabled(editable);
+	engineBox->setEnabled(editable);
+	speakerBox->setEnabled(editable && hasSpeakers_);
+	voiceBox->setEnabled(editable && hasSpeakers_);
+
 	status->setStyleSheet(""); /* 매 갱신마다 리셋 — ERROR 빨강이 다른 상태로 남지 않게 */
-	switch (eng.state()) {
+	switch (engState) {
 	case INTERP_NONE:
 		status->setText(T("StatusNoSource"));
 		button->setText(T("BtnStart"));
@@ -316,7 +336,14 @@ void InterpreterDock::populateSpeakers(const std::vector<std::pair<std::string, 
 
 	auto &eng = InterpreterEngine::instance();
 	std::string prev = eng.speaker(); /* 기존 선택 복원용 */
+	std::string server = eng.server_url();
+	std::string endpoint = server + "\n" + eng.service_key(); /* /speakers 조회 입력 전체(주소+키) */
 	bool has = !list.empty();
+	bool serverEmpty = server.empty();
+	/* "이전에 speaker 목록을 정상 수신한 바로 그 엔드포인트(주소+키)"의 일시적 조회 실패일 때만 기존
+	 * speaker·voice 를 보존한다. 주소나 키를 바꾼 직후의 실패(endpoint != lastOkEndpoint_)·빈 목록·
+	 * 주소 없음은 보존하지 않는다 → 새 엔드포인트에 stale "&speaker=" 가 붙는 것을 막는다. */
+	bool preserve = !has && !ok && !serverEmpty && endpoint == lastOkEndpoint_;
 
 	speakerBox->blockSignals(true);
 	voiceBox->blockSignals(true);
@@ -326,17 +353,37 @@ void InterpreterDock::populateSpeakers(const std::vector<std::pair<std::string, 
 			speakerBox->addItem(QString::fromStdString(p.second), QString::fromStdString(p.first));
 		int idx = speakerBox->findData(QString::fromStdString(prev));
 		speakerBox->setCurrentIndex(idx >= 0 ? idx : 0);
+		lastOkEndpoint_ = endpoint; /* 이 엔드포인트에서 목록 정상 수신 → 이후 이 엔드포인트의 실패는 보존 대상 */
 	} else {
-		QString msg = eng.server_url().empty() ? T("SpeakerNeedUrl")
-			      : ok                       ? T("SpeakerNone")
-							 : T("SpeakerFetchFail");
-		speakerBox->addItem(msg); /* data 없음 → 선택해도 speaker 미설정 */
-		voiceBox->setChecked(false);
+		QString msg = serverEmpty ? T("SpeakerNeedUrl")
+			      : ok          ? T("SpeakerNone")
+					    : T("SpeakerFetchFail");
+		if (preserve)
+			/* 같은 서버 일시 장애 — placeholder 에 기존 speaker key 를 data 로 실어, 이후 speaker 와
+			 * 무관한 설정(engine 등)을 바꿔도 currentData()=기존 speaker 로 보존되게 한다. */
+			speakerBox->addItem(msg, QString::fromStdString(prev));
+		else
+			speakerBox->addItem(msg); /* data 없음 → speaker="" 로 확정 저장 (stale 제거) */
+		if (!preserve)
+			voiceBox->setChecked(false); /* 보존 케이스가 아니면 음색 변환 불가 → 끈다 */
+		/* preserve 면 voiceBox(저장값)는 건드리지 않는다 — isChecked() 가 기존 voice 를 보존 */
 	}
-	speakerBox->setEnabled(has);
-	voiceBox->setEnabled(has);
+	hasSpeakers_ = has;
+	/* 활성 여부는 "목록 보유 && 편집 가능"의 AND. 편집 가능 = 통역 미진행(NONE/OFF). refresh 가 동일
+	 * 기준으로 500ms마다 재적용하므로 여기 값은 즉시 반영용. */
+	int dst = eng.state();
+	bool editable = (dst == INTERP_NONE || dst == INTERP_OFF);
+	speakerBox->setEnabled(has && editable);
+	voiceBox->setEnabled(has && editable);
 	speakerBox->blockSignals(false);
 	voiceBox->blockSignals(false);
 
-	onSettingsChanged(); /* 현재 speakerBox 선택 + voiceBox 상태를 엔진에 1회 반영 */
+	/* 현재 speakerBox 선택 + voiceBox 상태를 엔진에 1회 반영. 위에서 speakerBox/voiceBox 가 어떤
+	 * 경우에도 "올바른 값"을 갖도록 맞춰뒀으므로 무조건 저장해도 설정 손실이 없다:
+	 *  - has                       : 복원된 speaker / 저장된 voice, lastOkServer_ 갱신
+	 *  - ok && !has                : speaker="" / voice off → stale "&speaker=" 제거
+	 *  - serverEmpty               : speaker="" / voice off (주소 없음)
+	 *  - 서버 변경 후 조회 실패     : speaker="" / voice off → 새 서버에 옛 speaker 안 붙음
+	 *  - 같은 서버 일시 장애(preserve): placeholder data=기존 speaker / voice 보존 → 손실 없음 */
+	onSettingsChanged();
 }

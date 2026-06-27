@@ -47,5 +47,9 @@ private:
 	QPushButton *button = nullptr;
 	bool buildingList = false;           /* 재구성 중 itemChanged 무시 */
 	bool configReady_ = false;           /* load_config 완료 전 onSettingsChanged 저장 차단 */
+	std::string lastOkEndpoint_;         /* speaker 목록을 정상 수신한 마지막 "server_url\nservice_key"
+					      * (조회 입력 전체) — 실패 시 "같은 엔드포인트 일시 장애"(보존) vs
+					      * "서버/키 변경"(stale 제거) 구분 */
+	bool hasSpeakers_ = false;           /* speaker 목록 보유 여부 — speaker/voice 위젯 활성 판단 */
 	std::atomic<int> fetchGen_{0};       /* /speakers 요청 세대 — 늦게 도착한 옛 응답 무시 */
 };
