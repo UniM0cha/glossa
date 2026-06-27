@@ -1,9 +1,11 @@
-; Inno Setup 스크립트 — Glossa (Windows x64, per-user 설치)
+; Inno Setup 스크립트 — Glossa (Windows x64, 머신 단위 설치)
 ;
 ; 값(이름/버전/소스경로/출력)은 빌드 시 ISCC 의 /D 정의로 주입된다.
 ;   → plugin/.github/scripts/Package-Windows.ps1 참고
-; macOS .pkg(installer-macos.pkgproj.in)와 대칭이며, 관리자 권한 없이
-; 현재 사용자의 OBS 플러그인 폴더에 설치한다.
+; OBS Studio 는 Windows 에서 플러그인을 C:\ProgramData\obs-studio\plugins (권장) 또는
+; C:\Program Files\obs-studio\obs-plugins\64bit (레거시)에서만 스캔한다. %APPDATA%(Roaming)는
+; 스캔하지 않으므로 ProgramData(= CMake defaults.cmake 의 ALLUSERSPROFILE)에 설치한다.
+; 머신 단위 위치라 관리자 권한이 필요하다. (출처: https://obsproject.com/kb/plugins-guide)
 
 #ifndef MyAppName
   #define MyAppName "glossa"
@@ -28,9 +30,9 @@
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-; per-user 설치 — 관리자 권한 불필요
-PrivilegesRequired=lowest
-DefaultDirName={userappdata}\obs-studio\plugins\{#MyAppName}
+; 머신 단위(ProgramData) 설치 — OBS 가 스캔하는 위치라 관리자 권한 필요
+PrivilegesRequired=admin
+DefaultDirName={commonappdata}\obs-studio\plugins\{#MyAppName}
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 UninstallDisplayName={#MyAppName}

@@ -19,7 +19,7 @@
 
 **Windows (x64)**
 1. `*-windows-x64-installer.exe` 실행. SmartScreen 경고가 뜨면 *추가 정보 → 실행*.
-   (사용자 폴더에 설치되어 관리자 권한 불필요.)
+   설치 위치가 OBS 가 스캔하는 머신 폴더(`C:\ProgramData\obs-studio\plugins`)라 UAC(관리자) 프롬프트가 뜹니다 — *예* 를 누릅니다.
 2. OBS Studio 재시작.
 
 ## 사용 — 번역 서버 연결 (필수)
